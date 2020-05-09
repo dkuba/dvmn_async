@@ -7,9 +7,16 @@ from itertools import cycle
 from physics import *
 import os
 from obstacles import *
+from explosion import *
+from game_scenario import *
 
 TIC_TIMEOUT = 0.1
 STAR_NUM = 150
+
+START_YEAR = 1957
+END_YEAR = 2020
+
+
 
 SPACE_KEY_CODE = 32
 LEFT_KEY_CODE = 259
@@ -29,8 +36,10 @@ coroutines = []
 spaceship_frame = ''
 
 obstacles = []
+obstacles_in_last_collisions = []
 
-loop = asyncio.get_event_loop()
+current_year = 1957
+
 
 async def sleep(tics=1):
     for tic in range(tics):
@@ -39,79 +48,50 @@ async def sleep(tics=1):
 
 async def fill_orbit_with_garbage(canvas):
     global coroutines
+    global current_year
     rows_number, columns_number = canvas.getmaxyx()
 
     frame_names = ['duck', 'lamp', 'hubble', 'trash_large', 'trash_small', 'trash_xl']
 
     while True:
-        frame_path = os.path.join('frames', random.choice(frame_names) + FRAME_EXT)
-        with open(frame_path, "r") as garbage_file:
-            frame = garbage_file.read()
-        trash_column = random.randint(0, columns_number)
-        coroutines.append(show_obstacles(canvas, obstacles))
-        coroutine = fly_garbage(canvas, trash_column, frame)
+        if not get_garbage_delay_tics(current_year):
+            await sleep(10)
+        else:
+            await sleep(get_garbage_delay_tics(current_year))
+            frame_path = os.path.join('frames', random.choice(frame_names) + FRAME_EXT)
+            with open(frame_path, "r") as garbage_file:
+                frame = garbage_file.read()
+            trash_column = random.randint(0, columns_number)
+            coroutine = fly_garbage(canvas, trash_column, frame)
 
-        coroutines.append(coroutine)
-
-        await sleep(10)
+            coroutines.append(coroutine)
 
 
 async def fly_garbage(canvas, column, garbage_frame, speed=0.5):
     """Animate garbage, flying from top to bottom. Сolumn position will stay same, as specified on start."""
-    rows_number, columns_number = canvas.getmaxyx()
+    max_rows_number, max_columns_number = canvas.getmaxyx()
 
     column = max(column, 0)
-    column = min(column, columns_number - 1)
+    column = min(column, max_columns_number - 1)
     row_size, column_size = get_frame_size(garbage_frame)
     row = 0
 
-    obstacles.append(Obstacle(row, column, row_size, column_size, garbage_frame))
+    obstacles.append(Obstacle(row, column, row_size, column_size-1))
+    current_obstacle = obstacles[-1]
 
-    while row < rows_number:
+    while row < max_rows_number:
         draw_frame(canvas, row, column, garbage_frame)
         await asyncio.sleep(0)
         draw_frame(canvas, row, column, garbage_frame, negative=True)
+        if current_obstacle in obstacles_in_last_collisions:
+            obstacles_in_last_collisions.pop(obstacles_in_last_collisions.index(current_obstacle))
+            obstacles.pop(obstacles.index(current_obstacle))
+            coroutines.append(explode(canvas, row + row_size/2, column + column_size/2))
+            return
         row += speed
+        current_obstacle.row = row
 
-
-
-def draw_frame(canvas, start_row, start_column, text, negative=False):
-    """Draw multiline text fragment on canvas, erase text instead of drawing if negative=True is specified."""
-
-    rows_number, columns_number = canvas.getmaxyx()
-
-
-    for row, line in enumerate(text.splitlines(), round(start_row)):
-        if row < 0:
-            continue
-
-        if row >= rows_number:
-            break
-
-        for column, symbol in enumerate(line, round(start_column)):
-            if column < 0:
-                continue
-
-            if column >= columns_number:
-                break
-
-            if symbol == ' ':
-                continue
-
-            if row == rows_number - 1 and column == columns_number - 1:
-                continue
-
-            symbol = symbol if not negative else ' '
-            canvas.addch(row, column, symbol)
-
-
-def get_frame_size(text):
-    """Calculate size of multiline text fragment, return pair — number of rows and colums."""
-
-    lines = text.splitlines()
-    rows = len(lines)
-    columns = max([len(line) for line in lines])
-    return rows, columns
+    obstacles.pop(obstacles.index(current_obstacle))
 
 
 def get_rows_columns_directions(canvas):
@@ -154,7 +134,6 @@ async def animate_spaceship():
 async def run_spaceship(canvas, row, column):
     global spaceship_frame
     global coroutines
-    current_frame = ''
     row_speed = column_speed = 0
     max_row, max_column = canvas.getmaxyx()
 
@@ -183,6 +162,12 @@ async def run_spaceship(canvas, row, column):
         draw_frame(canvas, row, column, current_frame)
         await asyncio.sleep(0)
         draw_frame(canvas, row, column, current_frame, negative=True)
+        for obstacle in obstacles:
+            if obstacle.has_collision(row, column):
+                coroutines.append(show_gameover(canvas))
+                row_size, column_size = get_frame_size(current_frame)
+                coroutines.append(explode(canvas, row + row_size / 2, column + column_size / 2))
+                return
 
 
 async def fire(canvas, start_row, start_column, rows_speed=-0.3, columns_speed=0):
@@ -209,8 +194,13 @@ async def fire(canvas, start_row, start_column, rows_speed=-0.3, columns_speed=0
 
     while 0 < row < max_row and 0 < column < max_column:
         canvas.addstr(round(row), round(column), symbol)
+
         await asyncio.sleep(0)
         canvas.addstr(round(row), round(column), ' ')
+        for obstacle in obstacles:
+            if obstacle.has_collision(row, column):
+                obstacles_in_last_collisions.append(obstacle)
+                return
         row += rows_speed
         column += columns_speed
 
@@ -230,14 +220,48 @@ async def blink(canvas, row, column, symbol='*'):
         await sleep(3)
 
 
+async def show_gameover(canvas):
+    text = """
+   _____                         ____                 
+  / ____|                       / __ \                
+ | |  __  __ _ _ __ ___   ___  | |  | |_   _____ _ __ 
+ | | |_ |/ _` | '_ ` _ \ / _ \ | |  | \ \ / / _ \ '__|
+ | |__| | (_| | | | | | |  __/ | |__| |\ V /  __/ |   
+  \_____|\__,_|_| |_| |_|\___|  \____/  \_/ \___|_| 
+    """
+
+    max_rows_number, max_columns_number = canvas.getmaxyx()
+    row_size, column_size = get_frame_size(text)
+    row = (max_rows_number - row_size) / 2
+    column = (max_columns_number - column_size) / 2
+    while True:
+        draw_frame(canvas, row, column, text)
+        await asyncio.sleep(0)
+        get_rows_columns_directions(canvas)
+
+
+async def show_legend(canvas):
+    global current_year
+    max_rows_number, _ = canvas.getmaxyx()
+    text = '{} {}'.format(current_year, PHRASES[1957])
+    while True:
+        if current_year in PHRASES:
+            text = '{} {}'.format(current_year, PHRASES[current_year])
+        draw_frame(canvas, max_rows_number-1, 1, text)
+        await sleep(15)
+        current_year += 1
+
+
 def draw(canvas):
+    global current_year
+    global coroutines
+
     curses.curs_set(0)
     window = curses.initscr()
     window.nodelay(True)
     row_max, column_max = window.getmaxyx()
 
-    global coroutines
-    coroutines = [animate_spaceship(), run_spaceship(canvas, row_max / 2, column_max / 2),
+    coroutines = [animate_spaceship(), show_legend(canvas), run_spaceship(canvas, row_max / 2, column_max / 2),
                   fill_orbit_with_garbage(canvas)]
 
     for n in range(STAR_NUM):
@@ -247,6 +271,7 @@ def draw(canvas):
         coroutines.append(blink(canvas, row, column, symbol))
 
     while True:
+
         for coroutine in coroutines:
             try:
                 coroutine.send(None)
@@ -259,6 +284,5 @@ def draw(canvas):
 
 
 if __name__ == '__main__':
-
     curses.update_lines_cols()
     curses.wrapper(draw)
