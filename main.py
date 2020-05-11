@@ -208,7 +208,7 @@ async def fire(canvas, start_row, start_column, rows_speed=-0.3, columns_speed=0
 async def blink(canvas, row, column, symbol='*'):
     while True:
         canvas.addstr(row, column, symbol, curses.A_DIM)
-        await sleep(20)
+        await sleep(random.randint(18, 20))
 
         canvas.addstr(row, column, symbol)
         await sleep(5)
