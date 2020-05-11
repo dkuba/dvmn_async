@@ -54,17 +54,17 @@ async def fill_orbit_with_garbage(canvas):
     frame_names = ['duck', 'lamp', 'hubble', 'trash_large', 'trash_small', 'trash_xl']
 
     while True:
-        if not get_garbage_delay_tics(current_year):
-            await sleep(10)
-        else:
-            await sleep(get_garbage_delay_tics(current_year))
-            frame_path = os.path.join('frames', random.choice(frame_names) + FRAME_EXT)
-            with open(frame_path, "r") as garbage_file:
-                frame = garbage_file.read()
-            trash_column = random.randint(0, columns_number)
-            coroutine = fly_garbage(canvas, trash_column, frame)
+        tics = get_garbage_delay_tics(current_year)
+        if not tics:
+            tics = 10
+        await sleep(tics)
+        frame_path = os.path.join('frames', random.choice(frame_names) + FRAME_EXT)
+        with open(frame_path, "r") as garbage_file:
+            frame = garbage_file.read()
+        trash_column = random.randint(0, columns_number)
+        coroutine = fly_garbage(canvas, trash_column, frame)
 
-            coroutines.append(coroutine)
+        coroutines.append(coroutine)
 
 
 async def fly_garbage(canvas, column, garbage_frame, speed=0.5):
@@ -84,14 +84,14 @@ async def fly_garbage(canvas, column, garbage_frame, speed=0.5):
         await asyncio.sleep(0)
         draw_frame(canvas, row, column, garbage_frame, negative=True)
         if current_obstacle in obstacles_in_last_collisions:
-            obstacles_in_last_collisions.pop(obstacles_in_last_collisions.index(current_obstacle))
-            obstacles.pop(obstacles.index(current_obstacle))
+            obstacles_in_last_collisions.remove(current_obstacle)
+            obstacles.remove(current_obstacle)
             coroutines.append(explode(canvas, row + row_size/2, column + column_size/2))
             return
         row += speed
         current_obstacle.row = row
 
-    obstacles.pop(obstacles.index(current_obstacle))
+    obstacles.remove(current_obstacle)
 
 
 def get_rows_columns_directions(canvas):
@@ -139,7 +139,7 @@ async def run_spaceship(canvas, row, column):
 
     while True:
         columns_direction, rows_direction, fire_shot = get_rows_columns_directions(canvas)
-        if fire_shot:
+        if fire_shot and current_year >= END_YEAR:
             coroutines.append(fire(canvas, row, column+2, rows_speed=-1))
         frame_rows, frame_col = get_frame_size(spaceship_frame)
         row_speed, column_speed = update_speed(row_speed, column_speed, rows_direction, columns_direction)
@@ -163,9 +163,9 @@ async def run_spaceship(canvas, row, column):
         await asyncio.sleep(0)
         draw_frame(canvas, row, column, current_frame, negative=True)
         for obstacle in obstacles:
-            if obstacle.has_collision(row, column):
+            row_size, column_size = get_frame_size(current_frame)
+            if obstacle.has_collision(row, column, row_size, column_size):
                 coroutines.append(show_gameover(canvas))
-                row_size, column_size = get_frame_size(current_frame)
                 coroutines.append(explode(canvas, row + row_size / 2, column + column_size / 2))
                 return
 
@@ -270,14 +270,15 @@ def draw(canvas):
         symbol = random.choice('+*.:')
         coroutines.append(blink(canvas, row, column, symbol))
 
+    coroutines_to_remove = []
+
     while True:
 
-        for coroutine in coroutines:
+        for coroutine in coroutines[:]:
             try:
                 coroutine.send(None)
             except StopIteration:
-                index = coroutines.index(coroutine)
-                coroutines.pop(index)
+                coroutines.remove(coroutine)
 
         canvas.refresh()
         time.sleep(TIC_TIMEOUT)
